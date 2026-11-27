@@ -23,12 +23,17 @@
   .pos { color: #f87171; }
   .neg { color: #60a5fa; }
   .section { background: #1e293b; border-radius: 14px; padding: 16px; margin-bottom: 16px; overflow-x: auto; }
-  .sec-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+  .sec-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
   .sec-head h2 { margin: 0; font-size: 17px; }
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; white-space: nowrap; }
   th, td { padding: 10px 10px; border-bottom: 1px solid #334155; text-align: right; }
   th:first-child, td:first-child { text-align: left; }
   th { color: #94a3b8; font-weight: 600; }
+  th.sortable { cursor: pointer; user-select: none; transition: color 0.15s; }
+  th.sortable:hover { color: #f8fafc; }
+  th.sortable .sort-icon { display: inline-block; margin-left: 4px; font-size: 11px; opacity: 0.4; }
+  th.sortable.active { color: #38bdf8; }
+  th.sortable.active .sort-icon { opacity: 1; color: #38bdf8; }
   .status-msg { font-size: 13px; color: #38bdf8; margin-bottom: 12px; min-height: 18px; }
 </style>
 </head>
@@ -57,6 +62,24 @@
 <script>
 let currentPassword = "";
 let currentData = null;
+
+// 카테고리별 정렬 상태 저장 ({ col: 필드명, dir: 'asc' | 'desc' })
+const sortState = {
+  kr: { col: null, dir: null },
+  us: { col: null, dir: null },
+  crypto: { col: null, dir: null },
+  gold: { col: null, dir: null }
+};
+
+const COLUMNS = [
+  { key: "name", label: "종목명", type: "text" },
+  { key: "qty", label: "수량", type: "num" },
+  { key: "avg", label: "매수평단가", type: "num" },
+  { key: "cur", label: "현재가", type: "num" },
+  { key: "eval_krw", label: "평가금액", type: "num" },
+  { key: "pnl_krw", label: "평가손익", type: "num" },
+  { key: "ret", label: "수익률", type: "num" }
+];
 
 const fmtKrw = (n) => Math.round(n).toLocaleString("ko-KR") + "원";
 const fmtUsd = (n) => "$" + Number(n).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -100,6 +123,35 @@ async function unlock() {
   }
 }
 
+function toggleSort(sectionKey, colKey, colType) {
+  const state = sortState[sectionKey];
+  if (state.col === colKey) {
+    state.dir = state.dir === "asc" ? "desc" : "asc";
+  } else {
+    state.col = colKey;
+    state.dir = colType === "text" ? "asc" : "desc";
+  }
+  render(currentData);
+}
+
+function getSortedItems(items, sectionKey) {
+  const state = sortState[sectionKey];
+  if (!state || !state.col) return items;
+
+  const colDef = COLUMNS.find(c => c.key === state.col);
+  const sorted = [...items];
+  sorted.sort((a, b) => {
+    let cmp = 0;
+    if (colDef && colDef.type === "text") {
+      cmp = String(a[state.col] || "").localeCompare(String(b[state.col] || ""), "ko");
+    } else {
+      cmp = (Number(a[state.col]) || 0) - (Number(b[state.col]) || 0);
+    }
+    return state.dir === "asc" ? cmp : -cmp;
+  });
+  return sorted;
+}
+
 function render(d) {
   const s = d.summary;
   document.getElementById("metaInfo").textContent = `기준 시각: ${d.updated_at} · 적용 환율: ${d.usd_krw.toLocaleString("ko-KR")}원/$`;
@@ -113,11 +165,20 @@ function render(d) {
   const titles = { kr: "🇰🇷 국내주식 · ETF", us: "🇺🇸 미국주식", crypto: "🪙 코인 (업비트)", gold: "🥇 금 (KRX)" };
   let html = "";
   for (const key of ["kr", "us", "crypto", "gold"]) {
-    const items = d.sections[key] || [];
-    const subCost = items.reduce((a, b) => a + b.cost_krw, 0);
-    const subEval = items.reduce((a, b) => a + b.eval_krw, 0);
+    const rawItems = d.sections[key] || [];
+    const items = getSortedItems(rawItems, key);
+    const subCost = rawItems.reduce((a, b) => a + b.cost_krw, 0);
+    const subEval = rawItems.reduce((a, b) => a + b.eval_krw, 0);
     const subPnl = subEval - subCost;
     const subRet = subCost ? (subPnl / subCost * 100) : 0;
+
+    const state = sortState[key];
+    const headersHtml = COLUMNS.map(col => {
+      const isActive = state.col === col.key;
+      const icon = isActive ? (state.dir === "asc" ? "▲" : "▼") : "↕";
+      const activeCls = isActive ? "active" : "";
+      return `<th class="sortable ${activeCls}" onclick="toggleSort('${key}', '${col.key}', '${col.type}')">${col.label}<span class="sort-icon">${icon}</span></th>`;
+    }).join("");
 
     const rows = items.map(it => {
       const avgStr = it.currency === "USD" ? fmtUsd(it.avg) : Math.round(it.avg).toLocaleString("ko-KR") + "원";
@@ -139,7 +200,7 @@ function render(d) {
         <div class="meta">평가 ${fmtKrw(subEval)} · <span class="${cls(subPnl)}"><b>${fmtSignKrw(subPnl)} (${fmtPct(subRet)})</b></span></div>
       </div>
       <table>
-        <thead><tr><th>종목명</th><th>수량</th><th>매수평단가</th><th>현재가</th><th>평가금액</th><th>평가손익</th><th>수익률</th></tr></thead>
+        <thead><tr>${headersHtml}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
